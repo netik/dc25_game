@@ -1,6 +1,7 @@
 /* 
- * sample game code / logic
- * for Defcon 25 Badge Game. Implements one client which uses multicast to emulate the radio
+ * sample game code / logic for Defcon 25 Badge Game. 
+ *
+ * Implements one badge, using multicast to emulate the radio
  *
  * J. Adams <9/22/2016>
  *
@@ -15,32 +16,35 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <math.h>
 
+#include "util.h"
 #include "player.h"
 #include "game_constants.h"
 
-#define STDIN 0
-#define STDOUT 1
-#define HELLO_PORT 12345
-#define HELLO_GROUP "224.0.0.1"
-#define FALSE 0 
-#define TRUE 1
-#define MAX_BUFFER_SIZE 1024
+#define BCAST_PORT 12345
 
-#if defined(__APPLE__) || defined(__MACH__)
-#ifndef MSG_NOSIGNAL
-#define MSG_NOSIGNAL SO_NOSIGPIPE
-#endif
-#endif
+/* 
+ * NOTE!! This software uses multicast to mock the radio. IF you are
+ * testing, and you have a default route, this traffic will end up on
+ * your default route if your default route is set.
+ * 
+ * For debugging with the Internet up on your machine, do a 
+ *   sudo route add 224.0.0/4 -interface lo0 
+ * 
+ * ... and everything will work.
+ **/
+
+#define BCAST_IP "224.0.0.8"
 
 int randomint(int max) {
-  return arc4random();
+  return arc4random_uniform(max);
 }
 
 void display_player(player *p) { 
   /* TODO - change this into something more useful / screen based */
   printf("\n=======================================\n");
-  printf("Player %s\n\n", p->name);
+  printf("Player %s (netid: %d), a %s\n\n", p->name, p->netid, player_type_s[p->type]);
   printf("hp: %d  ",p->hp);
   printf("xp: %d  ",p->xp);
   printf("gold: %d  ",p->gold);
@@ -55,41 +59,105 @@ void display_player(player *p) {
 }
 
 void init_player(player *p) {
-  p->name = strdup("Hacker");
-
+  strcpy(p->name, player_fake_names[randomint(MAX_FAKE_NAMES)]);
   p->netid = randomint(65535);
-  p->type = randomint(3);
+  p->type = randomint(2); 
   p->gold = START_GOLD;
   p->hp = START_HP;
   p->xp = START_XP;
 }
 
-void send_message(int fd, struct sockaddr * addr, char * message) {
-  if (sendto(fd,message,sizeof(message),0, addr, sizeof(addr)) < 0) {
-    perror("sendto");
-    exit(1);
+player *deserialize_player(char *packed) { 
+  /* deserialize a string into a player object */
+  char buffer[255];
+  char *token;
+
+  player *newplayer = (player*)malloc(sizeof(player));
+
+  int field=0;
+  while ((token = strsep(&packed, ":"))) {
+    printf("%d: %s\n", field, token);
+    field++;
   }
+
+  return(newplayer);
+}
+
+void mark_player_seen(player *p) {
+
+}
+
+void show_players_seen(void) { 
+ if (seen_players == 0) {
+   printf("\n\nNo players.\n\n");
+ }
+ for (int i = 0; i < seen_players; i++) {
+         printf("%d. (%d) %s", 
+                i,
+                players_seen[i].p.netid, 
+                players_seen[i].p.name );
+ }
+}
+
+int send_message(player *p, int fd, struct sockaddr *addr, char * message) { 
+  int sinlen = sizeof(struct sockaddr_in);
+
+  char packet[1024];
+
+  /* serialize the player structure */
+  /* protocol: command:args:object type:object */
+  sprintf(packet, "%s:_:p:%d:%d:%s:%d:%d:%d:%d:%d:%d:%d:%d:%d", message,
+          p->netid,
+          p->type,
+          p->name,
+          p->hp,
+          p->xp,
+          p->gold,
+          p->level,
+          p->str,
+          p->ac,
+          p->dex,
+          p->won,
+          p->lost
+          );
+
+  return sendto(fd, &packet, sizeof(packet), 0, addr, sinlen);
 }
 
 void display_hello() {
-  printf("DC25 Caesear Game - Init\n\n");
+  printf("DC25 Caesar Game - Init\n\n");
 }
 
-void display_cmdprompt(uptime) {
-  printf("[%d] Cmd> ", uptime); fflush(stdout);
+void display_cmdprompt(int uptime, player *theplayer) {
+  printf("[t=%d] id=%d Cmd? ", uptime, theplayer->netid); fflush(stdout);
 }
 
-void do_beacon() {
-  printf("\n\n==beacon==\n\n");
+void do_beacon(int send_fd, struct sockaddr *send_addr, player *theplayer) {
+  if (send_message(theplayer, send_fd, send_addr, "BEACON") < 0) {
+    perror("bootmsg");
+  }
+}
+
+void handle_radio_message(char *message) { 
+  printf("%s\n",message);
+
+  if (strstr(message,"BEACON") == message) { 
+    player *p = deserialize_player(message);
+    if (p != NULL) { 
+      mark_player_seen(p);
+    }
+  }
 }
 
 int main(int argc, char *argv[])
 {
-  struct sockaddr_in addr;
-  int send_fd, recv_fd, cnt, sent;
-  struct ip_mreq mreq;
+  struct sockaddr_in recv_addr;
+  struct sockaddr_in send_addr;
+  struct sockaddr_in peer_addr;
 
+  int send_fd, recv_fd, cnt, sent;
   u_int yes = 1;
+  int sinlen = sizeof(struct sockaddr_in);
 
   /* create what looks like an ordinary UDP socket */
   if ((send_fd=socket(AF_INET,SOCK_DGRAM,0)) < 0) {
@@ -102,26 +170,64 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  /* set up sending addr and recv addr */
-  memset(&addr,0,sizeof(addr));
-  addr.sin_family=AF_INET;
-  addr.sin_addr.s_addr=inet_addr(HELLO_GROUP);
-  addr.sin_port=htons(HELLO_PORT);
+  /* set up recv addr */
+  memset(&recv_addr,0,sinlen);
+  recv_addr.sin_family=AF_INET;
+  recv_addr.sin_addr.s_addr=INADDR_ANY;
+  recv_addr.sin_port=htons(BCAST_PORT);
+  recv_addr.sin_family=PF_INET;
 
-  /* allow multiple sockets to use the same PORT number */
+  /* set up sending addr */
+  memset(&send_addr, 0, sinlen);
+  send_addr.sin_addr.s_addr=inet_addr(BCAST_IP);
+  send_addr.sin_port=htons(BCAST_PORT);
+  send_addr.sin_family=PF_INET;
+
+
+
+  /* allow multiple sockets to use the same address number */
+  if (setsockopt(send_fd,IPPROTO_IP,IP_MULTICAST_LOOP,&yes,sizeof(yes)) < 0) {
+    perror("set SO_BROADCAST failed");
+    exit(1);
+  }
+
   if (setsockopt(recv_fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes)) < 0) {
     perror("Reusing ADDR failed");
     exit(1);
   }
 
+  /* set up multicast, maybe? */
+  /* use setsockopt() to request that the kernel join a multicast group */
+
+#if defined(__APPLE__) || defined(__MACH__)
+  if (setsockopt(recv_fd,SOL_SOCKET,SO_REUSEPORT,&yes,sizeof(yes)) < 0) {
+    perror("Reusing PORT failed");
+    exit(1);
+  }
+#endif
+
   /* bind to receive address */
-  if (bind(recv_fd,(struct sockaddr *) &addr,sizeof(addr)) < 0) {
+  if (bind(recv_fd,(struct sockaddr *) &recv_addr,sizeof(recv_addr)) < 0) {
     perror("bind");
     exit(1);
+  } else { 
+    printf("bind ok.");
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr=inet_addr(BCAST_IP);
+    mreq.imr_interface.s_addr=inet_addr("127.0.0.1");
+
+    /* jna: does this fix the problem with losing multicast when main interface is up? */
+    setsockopt(recv_fd,IPPROTO_IP,IP_MULTICAST_IF,&mreq.imr_interface,sizeof(struct in_addr));
+
+    if (setsockopt(recv_fd,IPPROTO_IP,IP_ADD_MEMBERSHIP,(char*)&mreq,sizeof(mreq)) < 0) {
+      perror("setsockopt - multicaat failed ");
+      exit(1);
+    }
   }
 
   /* main loop */
-  int maxfd, result, peersock, i, j;
+  int maxfd = 0;
+  int result, peersock, i, j;
   int uptime = 0;
   socklen_t len;
   
@@ -132,16 +238,21 @@ int main(int argc, char *argv[])
   FD_ZERO(&readset);
   FD_SET(recv_fd, &readset);
   FD_SET(STDIN, &readset);
-  
-  maxfd = recv_fd;
+
+  maxfd = MAX(maxfd,STDIN);
+  maxfd = MAX(recv_fd,STDIN);
 
   player theplayer;
 
   display_hello();
   init_player(&theplayer);
-  display_player(&theplayer);
+  // at this point we'd ask them for their name. Instead, randomize!
   // ask_for_name();
-  display_cmdprompt(uptime);
+  display_player(&theplayer);
+  display_cmdprompt(uptime, &theplayer);
+
+  // we are born. beacon.
+  do_beacon(send_fd, (struct sockaddr *) &send_addr, &theplayer);
 
   do {
     memcpy(&tempset, &readset, sizeof(tempset));
@@ -152,8 +263,7 @@ int main(int argc, char *argv[])
     if (result == 0) {
       uptime++;
       if ((uptime % BEACON_INTERVAL) == 0) {
-	do_beacon();
-	display_cmdprompt(uptime);
+        do_beacon(send_fd, (struct sockaddr *) &send_addr, &theplayer);
       }
     }
     else if (result < 0 && errno != EINTR) {
@@ -162,71 +272,41 @@ int main(int argc, char *argv[])
     else if (result > 0) {
       /* we have data */
       if (FD_ISSET(STDIN, &tempset)){
+        memset(buffer, 0, MAX_BUFFER_SIZE);
 	int bytes_read = read(STDIN, buffer, MAX_BUFFER_SIZE);
 	buffer[bytes_read] = '\0';
-	buffer[bytes_read-1] = '\0'; // nuke the \n
+	buffer[bytes_read-1] = '\0'; // nuke the \n from stdin
 
-	/* quick'n'dirty cmd processing */
-	if (buffer[0] == 'p') {
-	  printf("PING\n");
-	  send_message(send_fd, (struct sockaddr *) &addr, "P");
-	}
-	if (buffer[0] == 'e' || buffer[0] == 'q') {
-	  return(0);
-	}
-	
-	if (buffer[0] == 'h') {
-	  printf("     Help: (p)ing (m)sg (e)xit/(q)uit\n");
-	}
+	/* quick'n'dirty cmd processing, first letter only. oh well. */
+        switch(buffer[0]) { 
+        case 'p':
+                do_beacon(send_fd, (struct sockaddr *) &send_addr, &theplayer);
+                break;
+        case 'e':
+                return(0);
+                break;
+        case 's':
+                show_players_seen();
+                break;
+        case 'i':
+                display_player(&theplayer);
+                break;
+        default:
+                printf("     Help: (p)ing (m)sg (i)show (s)een (e)xit/(q)uit\n");
+        }
 	
 	FD_CLR(STDIN, &tempset);
-	display_cmdprompt(uptime);
+	display_cmdprompt(uptime, &theplayer);
       }
 
       if (FD_ISSET(recv_fd, &tempset)) {
-	len = sizeof(addr);
-	peersock = accept(recv_fd, (struct sockaddr *)&addr, &len);
-	if (peersock < 0) {
-	  printf("Error in accept(): %s\n", strerror(errno));
-	}
-	else {
-	  FD_SET(peersock, &readset);
-	  maxfd = (maxfd < peersock)?peersock:maxfd;
-	}
+        socklen_t addr_len=sizeof(recv_addr);
+        ssize_t count=recvfrom(recv_fd,buffer,sizeof(buffer),0,(struct sockaddr*)&recv_addr,&addr_len);
+	buffer[count] = '\0';
+        handle_radio_message(buffer);
 	FD_CLR(recv_fd, &tempset);
       }
-
-      for (j=0; j<maxfd+1; j++) {
-	if (FD_ISSET(j, &tempset)) {
-	  do {
-	    result = recv(j, buffer, MAX_BUFFER_SIZE, 0);
-	  } while (result == -1 && errno == EINTR);
-
-	  if (result > 0) {
-	    buffer[result] = 0;
-	    printf("Echoing: %s\n", buffer);
-	    sent = 0;
-
-	    do {
-	      result = send(j, buffer+sent, result-sent, MSG_NOSIGNAL);
-	      if (result > 0)
-		sent += result;
-	      else if (result < 0 && errno != EINTR)
-		;
-	      break;
-	    } while (result > sent);
-
-	  }
-	  else if (result == 0) {
-	    close(j);
-	    FD_CLR(j, &readset);
-	  }
-	  else {
-	    printf("Error in recv(): %s\n", strerror(errno));
-	  }
-	}      // end if (FD_ISSET(j, &tempset))
-      }      // end for (j=0;...)
-    }      // end else if (result > 0)
+    }
   } while (1);
   
 }
