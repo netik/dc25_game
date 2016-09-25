@@ -1,6 +1,7 @@
 #define START_GOLD 50000
-#define START_HP   1000
 #define START_XP   0
 #define START_LVL  1
 
 #define BEACON_INTERVAL 5
+#define HEAL_INTERVAL 2
+#define LEVEL_HP_MULT 200
