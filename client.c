@@ -1,4 +1,4 @@
-/* 
+/*
  * sample game code / logic for Defcon 25 Badge Game. 
  *
  * Implements one badge, using multicast to emulate the radio
@@ -14,7 +14,7 @@
  * 
  * to force multicast to localhost. Test from there. 
  **/
-
+	
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -35,6 +35,7 @@
 
 /* globals, ew.. */
 int uptime = 0;
+int debug_packet = FALSE;
 player_hist_rec players_seen[MAX_SEEN];
 int players_seen_total = 0;  /* no players == -1 */
 
@@ -48,22 +49,22 @@ int randomint(int max) {
 }
 
 int four_d_six(void) {
- /* this seems stupid, for a computer. */
- int a[5];
- int tot = 0;
- int lowest = 4;
- a[4] = 6;
+  /* this seems stupid, for a computer. */
+  int a[5];
+  int tot = 0;
+  int lowest = 4;
+  a[4] = 6;
 
- for (int i=0; i<4; i++)  {
-   a[i] = randomint(6);
-   if (a[i] < a[lowest]) { lowest = i; };
- }
+  for (int i=0; i<4; i++)  {
+    a[i] = randomint(6);
+    if (a[i] < a[lowest]) { lowest = i; };
+  }
 
- for (int i=0; i<4; i++)  {
-   if (i != lowest) { tot = tot + a[i]; } 
- }
+  for (int i=0; i<4; i++)  {
+    if (i != lowest) { tot = tot + a[i]; } 
+  }
  
- return tot;
+  return tot;
 
 }
 
@@ -210,6 +211,7 @@ void mark_player_seen(int uptime, player *p) {
   for (int i=0; i < players_seen_total; i++) {
     if (players_seen[i].p.netid == p->netid) {
       players_seen[i].last_seen = uptime;
+      memcpy(&players_seen[i].p, p, sizeof(struct player_struct));
       seen_id = i;
     }
   }
@@ -223,20 +225,20 @@ void mark_player_seen(int uptime, player *p) {
 }
 
 void show_players_seen(void) { 
- if (players_seen_total == 0) {
-   printf("\n\nNo players.\n\n");
- }
- for (int i = 0; i < players_seen_total; i++) {
-         printf("%d. (%d) %s, Level %d %s, %d HP, %d XP (%d ago)\n", 
-                i+1,
-                players_seen[i].p.netid, 
-                players_seen[i].p.name,
-                players_seen[i].p.level,
-                player_type_s[players_seen[i].p.type],
-                players_seen[i].p.hp,
-                players_seen[i].p.xp,
-                uptime - players_seen[i].last_seen);
- }
+  if (players_seen_total == 0) {
+    printf("\n\nNo players.\n\n");
+  }
+  for (int i = 0; i < players_seen_total; i++) {
+    printf("%d. (%d) %s, Level %d %s, %d HP, %d XP (%d ago)\n", 
+	   i+1,
+	   players_seen[i].p.netid, 
+	   players_seen[i].p.name,
+	   players_seen[i].p.level,
+	   player_type_s[players_seen[i].p.type],
+	   players_seen[i].p.hp,
+	   players_seen[i].p.xp,
+	   uptime - players_seen[i].last_seen);
+  }
 }
 
 int send_message(player *p, char *command, char *append) { 
@@ -265,7 +267,7 @@ void display_cmdprompt(int uptime, player *theplayer) {
 
 /* timed events */
 void do_beacon(player *theplayer) {
-        if (send_message(theplayer, "BEACON:_", NULL) < 0) {
+  if (send_message(theplayer, "BEACON:_", NULL) < 0) {
     perror("bootmsg");
   }
 }
@@ -275,11 +277,15 @@ void do_autoheal(player *theplayer) {
   int healhp = (maxhp / 15);
 
   if (theplayer->hp < maxhp) { 
-          theplayer->hp += healhp;
-          if (theplayer->hp > maxhp) theplayer->hp = maxhp;
+    theplayer->hp += healhp;
+    if (theplayer->hp > maxhp) theplayer->hp = maxhp;
           
-          printf("auto heal: +%d hp\n",healhp ); fflush(stdout); 
+    printf("auto heal: +%d hp\n",healhp ); fflush(stdout); 
   }
+}
+
+void do_tribute(player *theplayer) { 
+        
 }
 
 /* requested events */
@@ -339,62 +345,63 @@ void handle_hit(player *local, player *attacker) {
          attacker->netid, 
          player_type_s[attacker->type]);
     
-    /* take damage */
-    int roll = randomint(20);
-    if (roll < local->ac) { 
-      printf("%s%d Misses.", 
-             attacker->name,
-             attacker->netid);
-      return;
-    }
+  /* take damage */
+  int roll = randomint(20);
+  if (roll < local->ac) { 
+    printf("%s%d Misses.", 
+	   attacker->name,
+	   attacker->netid);
+    return;
+  }
     
-    int damage = (roll + attacker->str);
-    int iscrit = 0;
+  int damage = (roll + attacker->str);
+  int iscrit = 0;
 
-    if (roll == 20) {
-      damage *= 2;
-    }
+  if (roll == 20) {
+    damage *= 2;
+  }
     
-    local->hp = local->hp - damage;
+  local->hp = local->hp - damage;
 
-    /* display it. */
-    if (roll >= 16) {
-      iscrit = 1;
-      printf("%s%d crits you for %d\n", 
+  /* display it. */
+  if (roll >= 16) {
+    iscrit = 1;
+    printf("%s%d crits you for %d\n", 
            attacker->name,
-             attacker->netid, damage);
-    } else {
-      printf("%s%d hits you for %d\n", 
-             attacker->name,
-             attacker->netid, damage);
-    }
+	   attacker->netid, damage);
+  } else {
+    printf("%s%d hits you for %d\n", 
+	   attacker->name,
+	   attacker->netid, damage);
+  }
     
-    /* ack attack */
-    sprintf(ackmsg,"AACK:%d", attacker->netid);
-    sprintf(dmgmsg, ":%d:%d", iscrit, damage);
-    if (send_message(local, ackmsg, dmgmsg) < 0) {
-      perror("aack");
-    }
+  /* ack attack */
+  sprintf(ackmsg,"AACK:%d", attacker->netid);
+  sprintf(dmgmsg, ":%d:%d", iscrit, damage);
+  if (send_message(local, ackmsg, dmgmsg) < 0) {
+    perror("aack");
+  }
 
-    if (local->hp <= 0) {
-            int xploss = (local->level * 200);
-            int gploss = (local->level * 500);
-            printf("You die. (-%d xp, -%d gold).\n", xploss, gploss);
-            local->hp = 0;
-            // TODO: adjust this
-            local->xp = local->xp - xploss;
-            local->gold = local->gold - gploss;
-            sprintf(ackmsg,"KILL:%d", attacker->netid);
-            if (send_message(local, ackmsg, NULL) < 0) {
-                    perror("killack");
-            }
+  if (local->hp <= 0) {
+    int xploss = (local->level * 200);
+    int gploss = (local->level * 500);
+    printf("You die. (-%d xp, -%d gold).\n", xploss, gploss);
+    local->hp = 0;
+    // TODO: adjust this
+    local->xp = local->xp - xploss;
+    local->gold = local->gold - gploss;
+    sprintf(ackmsg,"KILL:%d", attacker->netid);
+    if (send_message(local, ackmsg, NULL) < 0) {
+      perror("killack");
     }
+  }
 
-    fflush(stdout);
+  fflush(stdout);
 }
 
 void handle_radio_message(char *message,player *localplayer) { 
-//  printf("MSG: %s (%ld bytes)\n",message, strlen(message));
+  if (debug_packet) 
+    printf("MSG: %s (%ld bytes)\n",message, strlen(message));
 
   if (strstr(message,"BEACON") == message) { 
     player *p = deserialize_player(message);
@@ -566,6 +573,10 @@ int main(int argc, char *argv[])
             do_attack(&theplayer, &players_seen[attackidx-1].p);
           }
           break;
+        case 'd':
+          debug_packet = !debug_packet;
+          printf("Packet Debugging %s.\n", debug_packet == TRUE ? "On" : "Off");
+          break;
         case 'e':
           return(0);
           break;
@@ -575,13 +586,21 @@ int main(int argc, char *argv[])
         case 'i':
           display_player(&theplayer);
           break;
+        case 'c':
+	  if (theplayer.type==CAESAR) { 
+	    theplayer.type=SENATOR;
+	  } else { 
+	    theplayer.type=CAESAR;
+	  }
+          break;
         default:
-                printf("\nHelp:      p       send a beacon now\n");
-                printf("           c       make me caesar\n"); 
-                printf("           i       show me/inventory\n"); 
-                printf("           s       show players seen\n");
-                printf("           a #     attack player #\n");
-                printf("           e or q  quit\n\n");
+	  printf("\nHelp:      p       send a beacon now\n");
+	  printf("           c       make me caesar\n"); 
+	  printf("           i       show me/inventory\n"); 
+	  printf("           d       toggle packet debugging \n");
+	  printf("           s       show players seen\n");
+	  printf("           a #     attack player #\n");
+	  printf("           e or q  quit\n\n");
         }
         
         FD_CLR(STDIN, &tempset);

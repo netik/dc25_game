@@ -4,4 +4,4 @@
 
 #define BEACON_INTERVAL 5
 #define HEAL_INTERVAL 2
-#define LEVEL_HP_MULT 200
+#define LEVEL_HP_MULT 100
