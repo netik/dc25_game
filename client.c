@@ -9,7 +9,7 @@
  * testing, and you have a default route, this traffic will end up on
  * your default route if your default route is set.
  * 
- * For debugging with the Internet up on your machine, do a 
+ * You might need to route multicast to local to make this go:
  *   sudo route add 224.0.0/4 -interface lo0 
  * 
  * to force multicast to localhost. Test from there. 
@@ -59,7 +59,7 @@ int four_d_six(void) {
     a[i] = randomint(6);
     if (a[i] < a[lowest]) { lowest = i; };
   }
-
+  
   for (int i=0; i<4; i++)  {
     if (i != lowest) { tot = tot + a[i]; } 
   }
@@ -93,6 +93,7 @@ void display_player(player *p) {
 }
 
 void init_player(player *p) {
+  bzero(p, sizeof(player));
   strcpy(p->name, player_fake_names[randomint(MAX_FAKE_NAMES)]);
 
   p->netid = randomint(65535);
@@ -260,8 +261,26 @@ void display_hello() {
   printf("DC25 Caesar Game - Init\n\n");
 }
 
+char *display_time(int num_seconds) {
+  static char buf[16];
+
+  int days = num_seconds / (60 * 60 * 24);
+  num_seconds -= days * (60 * 60 * 24);
+  int hours = num_seconds / (60 * 60);
+  num_seconds -= hours * (60 * 60);
+  int minutes = num_seconds / 60;
+  int seconds = num_seconds % 60;
+
+  sprintf(buf,"%0dd %02d:%02d:%02d", days, hours, minutes, seconds);
+
+  return(buf);
+}
+
 void display_cmdprompt(int uptime, player *theplayer) {
-  printf("[%d] %s %d> ", uptime, theplayer->name, theplayer->netid); 
+  if (theplayer->in_combat) {  
+    printf("*** In Combat ***\n");
+  }
+  printf("[%s] %s %d> ", display_time(uptime), theplayer->name, theplayer->netid); 
   fflush(stdout);
 }
 
@@ -285,12 +304,20 @@ void do_autoheal(player *theplayer) {
 }
 
 void do_tribute(player *theplayer) { 
-        
+  /* this is the game economy.
+   *
+   * Senators pay tribute to Casear if he's around
+   * Caesar pays salary to guards 
+   * Senators... charge taxes on the guards?
+   */
 }
 
 /* requested events */
 void do_attack(player *theplayer, player *victim) { 
   char attackmsg[40];
+  theplayer->in_combat = TRUE;
+  theplayer->lastcombat = uptime;
+
   sprintf(attackmsg,"ATTACK:%d", victim->netid);
 
   if (send_message(theplayer, attackmsg, NULL) < 0) {
@@ -344,10 +371,13 @@ void handle_hit(player *local, player *attacker) {
          attacker->name, 
          attacker->netid, 
          player_type_s[attacker->type]);
-    
+
+  local->in_combat = TRUE;
+  local->lastcombat = uptime;
   /* take damage */
+  /* TODO: factor in STR, DEX attributes */
   int roll = randomint(20);
-  if (roll < local->ac) { 
+  if (roll < local->ac) {  // TODO: how does AC grow?
     printf("%s%d Misses.", 
 	   attacker->name,
 	   attacker->netid);
@@ -386,6 +416,7 @@ void handle_hit(player *local, player *attacker) {
     int xploss = (local->level * 200);
     int gploss = (local->level * 500);
     printf("You die. (-%d xp, -%d gold).\n", xploss, gploss);
+    local->in_combat = FALSE;
     local->hp = 0;
     // TODO: adjust this
     local->xp = local->xp - xploss;
@@ -397,6 +428,14 @@ void handle_hit(player *local, player *attacker) {
   }
 
   fflush(stdout);
+}
+
+void idle_combat(player *theplayer) { 
+  if ( ( uptime > (theplayer->lastcombat + COMBAT_IDLE)) && 
+       (theplayer->in_combat)) { 
+    theplayer->in_combat = FALSE;
+    printf("You are no longer in combat\n");
+  }
 }
 
 void handle_radio_message(char *message,player *localplayer) { 
@@ -540,14 +579,22 @@ int main(int argc, char *argv[])
     result = select(maxfd + 1, &tempset, NULL, NULL, &tv);
 
     if (result == 0) {
+      // TODO: Replace with RTC or microcontroller clock
       uptime++;
-      if ((uptime % BEACON_INTERVAL) == 0) {
+      if ((uptime % INTERVAL_BEACON) == 0) {
         do_beacon(&theplayer);
       }
 
-      if ((uptime % HEAL_INTERVAL) == 0) {
+      if ((uptime % INTERVAL_HEAL) == 0) {
         do_autoheal(&theplayer);
       }
+
+      if ((uptime % INTERVAL_TRIBUTE) == 0) {
+        do_tribute(&theplayer);
+      }
+
+      // elect_caesar
+      idle_combat(&theplayer);
     }
     else if (result < 0 && errno != EINTR) {
       printf("Error in select(): %s\n", strerror(errno));

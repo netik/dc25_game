@@ -10,7 +10,8 @@ typedef struct player_struct {
   player_type type;
   char name[20];
 
-  int in_combat;
+  int in_combat;  //
+  int lastcombat; // how long since combat started
 
   int target;  // some player operations have a target
   int netid;
